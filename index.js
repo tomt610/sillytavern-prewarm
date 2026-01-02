@@ -86,13 +86,22 @@ async function doPrewarm() {
             chat.push(tempUserMessage);
             console.debug('[Prewarm] Added temporary user message to chat array');
             
-            // Set up a timeout to cancel the generation after delay
-            const cancelTimeout = setTimeout(() => {
-                console.debug('[Prewarm] Canceling generation after delay');
-                stopGeneration();
-            }, prewarmDelay);
+            // Set up a listener for when the prompt data is ready (request about to be sent)
+            // This ensures we don't cancel before the request is actually sent to the backend
+            let cancelTimeout = null;
+            const onDataReady = () => {
+                console.debug(`[Prewarm] Request being sent, will cancel after ${prewarmDelay}ms`);
+                cancelTimeout = setTimeout(() => {
+                    console.debug('[Prewarm] Canceling generation after delay');
+                    stopGeneration();
+                }, prewarmDelay);
+            };
+            
+            // Listen for the event that fires right before the API request is made
+            eventSource.once(event_types.GENERATE_AFTER_DATA, onDataReady);
             
             // Start quiet generation and wait for it to complete/fail
+            console.debug('[Prewarm] Starting Generate call...');
             try {
                 await Generate('quiet', {
                     quiet_prompt: '', // Empty quiet prompt, the user message is in chat array
@@ -105,7 +114,11 @@ async function doPrewarm() {
                     console.debug('[Prewarm] Generation ended (expected):', error?.message || error);
                 }
             } finally {
-                clearTimeout(cancelTimeout);
+                // Clean up
+                eventSource.removeListener(event_types.GENERATE_AFTER_DATA, onDataReady);
+                if (cancelTimeout) {
+                    clearTimeout(cancelTimeout);
+                }
             }
 
             // Wait for any pending save operations to complete
@@ -130,21 +143,34 @@ async function doPrewarm() {
 
         } else {
             // Quiet mode: Use quiet generation (no user message added)
-            const generatePromise = Generate('quiet', {
-                quiet_prompt: '',
-                force_name2: true,
-                skipWIAN: true,
-            }).catch((error) => {
+            // Set up a listener for when the prompt data is ready
+            let cancelTimeout = null;
+            const onDataReady = () => {
+                console.debug(`[Prewarm] Request being sent (quiet mode), will cancel after ${prewarmDelay}ms`);
+                cancelTimeout = setTimeout(() => {
+                    console.debug('[Prewarm] Canceling generation after delay');
+                    stopGeneration();
+                }, prewarmDelay);
+            };
+            
+            eventSource.once(event_types.GENERATE_AFTER_DATA, onDataReady);
+            
+            try {
+                await Generate('quiet', {
+                    quiet_prompt: '',
+                    force_name2: true,
+                    skipWIAN: true,
+                });
+            } catch (error) {
                 if (error?.name !== 'AbortError' && !String(error).includes('abort')) {
                     console.debug('[Prewarm] Generation ended (expected):', error?.message || error);
                 }
-            });
-
-            // Wait for the context to be sent to the endpoint
-            await delay(prewarmDelay);
-
-            // Cancel the generation
-            stopGeneration();
+            } finally {
+                eventSource.removeListener(event_types.GENERATE_AFTER_DATA, onDataReady);
+                if (cancelTimeout) {
+                    clearTimeout(cancelTimeout);
+                }
+            }
         }
 
         console.log('[Prewarm] Context prewarm complete - KV cache should be warm');
