@@ -53,6 +53,17 @@
                     Time to wait before canceling the prewarm request. This should be long enough for the context to be sent to the endpoint.
                     Default: 500ms. Increase if prewarm isn't working.
                 </small>
+                
+                <hr class="sysHR">
+                
+                <label class="checkbox_label" for="prewarm_rpg_companion">
+                    <input type="checkbox" id="prewarm_rpg_companion" />
+                    <span data-i18n="Prewarm after RPG Companion">Prewarm after RPG Companion updates</span>
+                </label>
+                <small data-i18n="prewarm_rpg_companion_description">
+                    Also trigger prewarm after RPG Companion finishes updating tracker data.
+                    Will NOT prewarm if you've already started sending a new message.
+                </small>
             </div>
         </div>
     </div>

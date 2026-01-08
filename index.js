@@ -1,9 +1,12 @@
-import { eventSource, event_types, saveSettingsDebounced, Generate, stopGeneration, chat, saveChatConditional, showSwipeButtons } from '../../../script.js';
+import { eventSource, event_types, saveSettingsDebounced, Generate, stopGeneration, chat, saveChatConditional, showSwipeButtons, is_send_press } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { delay } from '../../utils.js';
 
 const extensionName = 'prewarm';
 const extensionFolderPath = `scripts/extensions/${extensionName}`;
+
+// RPG Companion event name (matches what we added to apiClient.js)
+const RPG_COMPANION_UPDATE_COMPLETE = 'rpg_companion_update_complete';
 
 // Prewarm modes
 const PREWARM_MODES = {
@@ -17,6 +20,7 @@ const defaultSettings = {
     delay: 500, // ms to wait before canceling the prewarm request
     mode: PREWARM_MODES.USER_MSG, // Default to user message mode
     prewarmMessage: '.', // Message to use for user_msg mode (single dot is minimal)
+    prewarmAfterRPGCompanion: true, // Whether to prewarm after RPG Companion updates
 };
 
 // Flag to prevent recursive prewarm triggers
@@ -24,6 +28,9 @@ let isPrewarming = false;
 
 // Track the last generation type to skip prewarm after swipes/regenerates
 let lastGenerationType = null;
+
+// Track if a user-initiated generation is currently in progress
+let isUserGenerating = false;
 
 // Generation types that should NOT trigger prewarm
 const SKIP_PREWARM_TYPES = ['swipe', 'regenerate', 'continue', 'quiet'];
@@ -38,7 +45,12 @@ function onGenerationStarted(type) {
         return;
     }
     lastGenerationType = type;
-    console.debug('[Prewarm] Generation started, type:', type);
+    
+    // Track if this is a user-initiated generation (not quiet, not our prewarm)
+    if (!SKIP_PREWARM_TYPES.includes(type)) {
+        isUserGenerating = true;
+        console.debug('[Prewarm] User generation started, type:', type);
+    }
 }
 
 /**
@@ -206,6 +218,9 @@ function onGenerationEnded(messageId) {
         return;
     }
 
+    // Reset user generation flag
+    isUserGenerating = false;
+
     // Skip prewarm for certain generation types (swipe, regenerate, continue, quiet)
     if (lastGenerationType && SKIP_PREWARM_TYPES.includes(lastGenerationType)) {
         console.debug('[Prewarm] Skipping prewarm for generation type:', lastGenerationType);
@@ -216,6 +231,37 @@ function onGenerationEnded(messageId) {
     lastGenerationType = null;
 
     // Use setTimeout to not block the event handler
+    setTimeout(() => doPrewarm(), 0);
+}
+
+/**
+ * Handles the RPG Companion update complete event.
+ * Triggers prewarm after RPG Companion finishes its tracker update.
+ */
+function onRPGCompanionUpdateComplete() {
+    if (!extension_settings[extensionName]?.enabled) {
+        return;
+    }
+
+    if (!extension_settings[extensionName]?.prewarmAfterRPGCompanion) {
+        console.debug('[Prewarm] RPG Companion integration disabled, skipping');
+        return;
+    }
+
+    // Don't prewarm if we're already prewarming
+    if (isPrewarming) {
+        console.debug('[Prewarm] Already prewarming, skipping RPG Companion trigger');
+        return;
+    }
+
+    // Don't prewarm if user has already started typing/sending a new message
+    // is_send_press is true when a generation is in progress from user input
+    if (is_send_press || isUserGenerating) {
+        console.debug('[Prewarm] User generation in progress, skipping RPG Companion prewarm');
+        return;
+    }
+
+    console.log('[Prewarm] RPG Companion finished updating, triggering prewarm...');
     setTimeout(() => doPrewarm(), 0);
 }
 
@@ -240,6 +286,7 @@ function loadSettings() {
     $('#prewarm_delay').val(extension_settings[extensionName].delay);
     $('#prewarm_mode').val(extension_settings[extensionName].mode);
     $('#prewarm_message').val(extension_settings[extensionName].prewarmMessage);
+    $('#prewarm_rpg_companion').prop('checked', extension_settings[extensionName].prewarmAfterRPGCompanion);
     
     // Show/hide message input based on mode
     updateMessageInputVisibility();
@@ -295,9 +342,18 @@ function updateMessageInputVisibility() {
         saveSettingsDebounced();
     });
 
+    $('#prewarm_rpg_companion').on('change', function () {
+        extension_settings[extensionName].prewarmAfterRPGCompanion = $(this).prop('checked');
+        saveSettingsDebounced();
+        console.log('[Prewarm] RPG Companion integration:', extension_settings[extensionName].prewarmAfterRPGCompanion);
+    });
+
     // Subscribe to generation events
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
     eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
+
+    // Subscribe to RPG Companion update complete event
+    eventSource.on(RPG_COMPANION_UPDATE_COMPLETE, onRPGCompanionUpdateComplete);
 
     console.log('[Prewarm] Context Prewarm extension loaded');
 })();
